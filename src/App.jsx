@@ -1,10 +1,12 @@
 import React, { useState, useRef, useEffect } from "react";
 import {
-  ChevronLeft, X, Heart, MapPin, Clock, Search, Link2, Plus, Minus,
+  ChevronLeft, X, Heart, MapPin, Clock, Link2, Plus, Minus,
   Users, Home, Map as MapIcon, Calendar, User, Check, SlidersHorizontal,
   Share2, Copy, MoreVertical, Trash2, Pencil, ChevronDown, ChevronUp,
   RefreshCw, Sparkles, Send, ArrowRight, ArrowLeftRight
 } from "lucide-react";
+import { isSupabaseConfigured, supabase } from "./lib/supabase";
+import GoogleMap from "./components/GoogleMap";
 
 /* ---------------------------------------------------------
    위스팟(wispot) 클릭 프로토타입
@@ -50,7 +52,7 @@ const FONT_SERIF = "'Pretendard', -apple-system, 'Apple SD Gothic Neo', sans-ser
 
 /* ---------------- 더미데이터 ---------------- */
 
-const ME = { id: "u_sieun", name: "시은", emoji: "😎" };
+const DEMO_ME = { id: "u_sieun", name: "시은", emoji: "😎" };
 const MEMBERS = [
   { id: "u_sieun", name: "시은", emoji: "😎", role: "그룹장" },
   { id: "u_dagyo", name: "다교", emoji: "🐥" },
@@ -288,9 +290,77 @@ export default function WispotPrototype() {
   const [activeGroupId, setActiveGroupId] = useState("g1");
   const [feedMode, setFeedMode] = useState("feed"); // feed | map
   const [toast, setToastMsg] = useState("");
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [authReady, setAuthReady] = useState(!isSupabaseConfigured);
   const toastTimer = useRef(null);
 
   const current = history[history.length - 1];
+  const userMetadata = session?.user?.user_metadata || {};
+  const ME = session
+    ? {
+        id: session.user.id,
+        name: profile?.display_name || userMetadata.name || userMetadata.full_name || session.user.email?.split("@")[0] || "위스팟 사용자",
+        emoji: profile?.avatar_emoji || "😎",
+      }
+    : DEMO_ME;
+
+  useEffect(() => {
+    if (!supabase) {
+      setAuthReady(true);
+      return undefined;
+    }
+
+    let active = true;
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!active) return;
+      if (error) setToastMsg("로그인 상태를 확인하지 못했어요");
+      setSession(data.session);
+      setAuthReady(true);
+    });
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setAuthReady(true);
+    });
+
+    return () => {
+      active = false;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!supabase || !session?.user?.id) {
+      setProfile(null);
+      return undefined;
+    }
+
+    let active = true;
+    supabase
+      .from("profiles")
+      .select("display_name, avatar_emoji, avatar_url")
+      .eq("id", session.user.id)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) setToastMsg("프로필을 불러오지 못했어요");
+        setProfile(data || null);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    if (session && current.screen === "login") {
+      setHistory([{ screen: "groupList", params: {} }]);
+    } else if (!session && current.screen !== "login") {
+      setHistory([{ screen: "login", params: {} }]);
+    }
+  }, [authReady, session, current.screen]);
 
   function go(screen, params = {}, replace = false) {
     setHistory((h) => (replace ? [...h.slice(0, -1), { screen, params }] : [...h, { screen, params }]));
@@ -326,15 +396,35 @@ export default function WispotPrototype() {
 
   /* ---------- 로그인 ---------- */
   function LoginScreen() {
+    const [email, setEmail] = useState("");
+    const [loading, setLoading] = useState(false);
+    const [authMessage, setAuthMessage] = useState("");
+
+    async function signInWithEmail(event) {
+      event.preventDefault();
+      if (!supabase || !email.trim()) return;
+      setLoading(true);
+      setAuthMessage("");
+      const { error } = await supabase.auth.signInWithOtp({
+        email: email.trim(),
+        options: { emailRedirectTo: window.location.origin },
+      });
+      setAuthMessage(error ? error.message : "로그인 링크를 이메일로 보냈어요.");
+      setLoading(false);
+    }
+
     return (
       <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", padding: 40, textAlign: "center" }}>
         <img src={`data:image/png;base64,${LOGO_B64}`} alt="wispot 로고" style={{ width: 84, height: 84, borderRadius: 22, marginBottom: 24, objectFit: "cover" }} />
         <div style={{ fontSize: 22, fontWeight: 800, color: C.charcoal, lineHeight: 1.4, fontFamily: FONT_SERIF }}>우리가 저장한 곳을<br /><span style={{ color: C.coral }}>함께 가는 날</span>까지</div>
         <div style={{ fontSize: 13, color: C.muted, marginTop: 14, lineHeight: 1.6 }}>친구들과 인스타, 지도, 카톡에서 발견한 장소를<br />한 곳에 모아두고, 약속이 생기면<br />바로 코스로 만들어드려요.</div>
-        <button onClick={() => reset("groupList")} style={{ marginTop: 40, width: "100%", padding: "15px", borderRadius: 14, border: "none", background: "#FEE500", color: "#391B1B", fontWeight: 800, fontSize: 14.5, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-          💬 카카오 로그인
-        </button>
-        <div style={{ fontSize: 10.5, color: "#C9BFB8", marginTop: 16 }}>* 프로토타입에서는 클릭 시 바로 진행됩니다</div>
+        <form onSubmit={signInWithEmail} style={{ width: "100%", display: "flex", gap: 8, marginTop: 40 }}>
+          <input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="email@example.com" style={{ minWidth: 0, flex: 1, padding: "12px", borderRadius: 12, border: `1px solid ${C.line}`, fontSize: 12.5, boxSizing: "border-box" }} />
+          <button disabled={loading || !isSupabaseConfigured} type="submit" style={{ border: "none", borderRadius: 12, padding: "0 14px", background: C.coral, color: "#fff", fontWeight: 800, cursor: loading ? "wait" : "pointer" }}>{loading ? "전송 중..." : "로그인 링크 받기"}</button>
+        </form>
+        <div style={{ fontSize: 10.5, color: "#A49A94", marginTop: 10 }}>비밀번호 없이 이메일로 받은 링크를 눌러 로그인해요.</div>
+        {authMessage && <div role="status" style={{ fontSize: 11, color: authMessage.includes("보냈어요") ? "#2A9D82" : "#B24A3A", marginTop: 12, lineHeight: 1.5 }}>{authMessage}</div>}
+        {!isSupabaseConfigured && <div style={{ fontSize: 10.5, color: "#B24A3A", marginTop: 12 }}>.env.local의 Supabase 설정이 필요합니다.</div>}
       </div>
     );
   }
@@ -546,103 +636,63 @@ export default function WispotPrototype() {
   }
 
   /* ---------- 장소 저장 ---------- */
-  function PlaceSaveScreen() {
-    const [tab, setTab] = useState("link");
-    const [linkInput, setLinkInput] = useState("");
-    const [parsed, setParsed] = useState(false);
-    const [searchInput, setSearchInput] = useState("");
-    const [selectedResult, setSelectedResult] = useState(null);
+
+  function DummyPlaceSaveScreen() {
+    const [selected, setSelected] = useState(null);
     const [selectedGroupId, setSelectedGroupId] = useState(activeGroupId);
     const [memo, setMemo] = useState("");
-    const searchResults = [
-      { name: "어니언 성수", tags: ["카페", "성수", "오늘 영업중"], sub: "오늘 22:00까지 영업 · 월요일 휴무", image: IMG.cafe1 },
-      { name: "밀도 성수점", tags: ["카페", "성수"], sub: "오늘 23:00까지 · 연중무휴", image: IMG.cafe3 },
-    ];
-    const canSave = tab === "link" ? parsed : !!selectedResult;
+
+    function saveDummyPlace() {
+      if (!selected) return;
+      const exists = places.some((place) => place.groupId === selectedGroupId && place.name === selected.name);
+      if (!exists) {
+        setPlaces((previous) => [...previous, {
+          ...selected,
+          id: `p_dummy_${Date.now()}`,
+          groupId: selectedGroupId,
+          savedBy: ME.name,
+          status: "confirmed",
+          memos: memo ? [{ user: ME.name, emoji: ME.emoji, text: memo }] : [],
+        }]);
+      }
+      toast_(exists ? "이미 그룹에 있는 더미 장소예요" : "더미 장소를 그룹에 추가했어요");
+      back();
+    }
+
     return (
       <>
         <Header title="장소 저장하기" onBack={back} />
         <div style={{ flex: 1, overflowY: "auto", padding: "14px 20px 20px" }}>
-          <div style={{ display: "flex", background: C.cream, borderRadius: 12, padding: 4, marginBottom: 18 }}>
-            {[["link", "링크 붙여넣기"], ["search", "직접 검색"]].map(([id, label]) => (
-              <button key={id} onClick={() => setTab(id)} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "none", cursor: "pointer", fontWeight: 700, fontSize: 13, background: tab === id ? "#fff" : "none", color: tab === id ? C.coralDark : C.muted }}>{label}</button>
-            ))}
+          <div style={{ padding: 14, borderRadius: 14, background: C.cream, marginBottom: 18 }}>
+            <div style={{ fontWeight: 800, fontSize: 12.5, color: C.coralDark }}>프로토타입 더미 장소</div>
+            <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, marginTop: 5 }}>외부 장소 정보는 요청하지 않습니다. 아래 준비된 더미 데이터만 사용해요.</div>
           </div>
 
-          {tab === "link" ? (
-            <>
-              <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>장소 링크</div>
-              <input value={linkInput} onChange={(e) => { setLinkInput(e.target.value); setParsed(false); }} placeholder="https://map.naver.com/v5/entry/place/123456" style={{ width: "100%", padding: "13px 14px", borderRadius: 12, border: `1px solid ${C.line}`, fontSize: 13, marginBottom: 12, boxSizing: "border-box" }} />
-              {!parsed && (
-                <button onClick={() => linkInput.trim() && setParsed(true)} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `1px solid ${C.coral}`, background: "none", color: C.coralDark, fontWeight: 700, fontSize: 12.5, cursor: "pointer", marginBottom: 14 }}>장소 정보 불러오기</button>
-              )}
-              {parsed && (
-                <div style={{ borderRadius: 14, border: `1px solid ${C.line}`, padding: 12, marginBottom: 14 }}>
-                  <div style={{ fontSize: 11, color: C.mint, fontWeight: 800, marginBottom: 8 }}>✓ 장소 정보를 불러왔어요</div>
-                  <div style={{ display: "flex", gap: 10 }}>
-                    <PlaceThumb place={{ image: IMG.cafe1, name: "어니언 성수" }} />
-                    <div>
-                      <div style={{ fontWeight: 800, fontSize: 14 }}>어니언 성수</div>
-                      <div style={{ display: "flex", gap: 4, margin: "4px 0" }}>
-                        {["카페", "성수", "오늘 영업중"].map((t) => <span key={t} style={{ fontSize: 9.5, padding: "2px 7px", borderRadius: 999, background: C.cream, color: C.coralDark, fontWeight: 700 }}>{t}</span>)}
-                      </div>
-                      <div style={{ fontSize: 11, color: C.muted }}>오늘 22:00까지 영업 · 월요일 휴무</div>
-                    </div>
-                  </div>
-                </div>
-              )}
-              {parsed && (
-                <>
-                  <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>자동 분류 결과</div>
-                  <div style={{ fontSize: 11, color: C.muted, marginBottom: 10 }}>링크에서 자동으로 분류했어요. 틀렸다면 저장 전 직접 바꿀 수 있어요.</div>
-                  <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-                    <select style={{ flex: 1, padding: "10px", borderRadius: 10, border: `1px solid ${C.line}`, fontSize: 12.5 }} defaultValue="성수"><option>성수</option>{REGIONS.filter(r=>r!=="성수").map(r=><option key={r}>{r}</option>)}</select>
-                    <select style={{ flex: 1, padding: "10px", borderRadius: 10, border: `1px solid ${C.line}`, fontSize: 12.5 }} defaultValue="카페"><option>카페</option>{CATEGORIES.filter(c=>c!=="카페").map(c=><option key={c}>{c}</option>)}</select>
-                  </div>
-                </>
-              )}
-            </>
-          ) : (
-            <>
-              <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>장소명</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 14px", marginBottom: 14 }}>
-                <Search size={15} color={C.muted} />
-                <input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="어니언 성수" style={{ border: "none", outline: "none", flex: 1, fontSize: 13 }} />
+          <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>추가할 장소</div>
+          {SAMPLE_PLACES.map((place) => (
+            <div key={place.id} onClick={() => setSelected(place)} style={{ display: "flex", gap: 10, alignItems: "center", padding: 10, borderRadius: 12, border: selected?.id === place.id ? `1.5px solid ${C.coral}` : `1px solid ${C.line}`, background: selected?.id === place.id ? C.cream : "#fff", marginBottom: 8, cursor: "pointer" }}>
+              <PlaceThumb place={place} size={46} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 800, fontSize: 13 }}>{place.name}</div>
+                <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>{place.category} · {place.region}</div>
               </div>
-              <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>저장할 장소를 선택해주세요</div>
-              {searchResults.map((r) => (
-                <div key={r.name} onClick={() => setSelectedResult(r)} style={{ display: "flex", gap: 10, padding: 10, borderRadius: 12, border: selectedResult?.name === r.name ? `1.5px solid ${C.coral}` : `1px solid ${C.line}`, background: selectedResult?.name === r.name ? C.cream : "#fff", marginBottom: 10, cursor: "pointer" }}>
-                  <PlaceThumb place={r} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 800, fontSize: 13.5 }}>{r.name}</div>
-                    <div style={{ display: "flex", gap: 4, margin: "3px 0" }}>{r.tags.map((t) => <span key={t} style={{ fontSize: 9, padding: "2px 6px", borderRadius: 999, background: C.cream, color: C.coralDark, fontWeight: 700 }}>{t}</span>)}</div>
-                    <div style={{ fontSize: 10.5, color: C.muted }}>{r.sub}</div>
-                  </div>
-                  <div style={{ width: 16, height: 16, borderRadius: "50%", border: `2px solid ${selectedResult?.name === r.name ? C.coral : C.line}`, background: selectedResult?.name === r.name ? C.coral : "none", marginTop: 4 }} />
-                </div>
-              ))}
-            </>
-          )}
+              <div style={{ width: 16, height: 16, borderRadius: "50%", border: `2px solid ${selected?.id === place.id ? C.coral : C.line}`, background: selected?.id === place.id ? C.coral : "transparent" }} />
+            </div>
+          ))}
 
-          <div style={{ fontSize: 12.5, fontWeight: 700, margin: "6px 0 8px" }}>어느 그룹에 저장할까요?</div>
-          {groups.map((g) => (
-            <div key={g.id} onClick={() => setSelectedGroupId(g.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: 12, borderRadius: 12, border: selectedGroupId === g.id ? `1.5px solid ${C.coral}` : `1px solid ${C.line}`, background: selectedGroupId === g.id ? C.cream : "#fff", marginBottom: 8, cursor: "pointer" }}>
-              <div style={{ width: 30, height: 30, borderRadius: 8, background: g.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>{g.icon}</div>
-              <span style={{ fontWeight: 700, fontSize: 13 }}>{g.name}</span>
-              <div style={{ marginLeft: "auto", width: 16, height: 16, borderRadius: "50%", background: selectedGroupId === g.id ? C.coral : "none", border: `2px solid ${selectedGroupId === g.id ? C.coral : C.line}` }} />
+          <div style={{ fontSize: 12.5, fontWeight: 700, margin: "16px 0 8px" }}>어느 그룹에 저장할까요?</div>
+          {groups.map((group) => (
+            <div key={group.id} onClick={() => setSelectedGroupId(group.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: 12, borderRadius: 12, border: selectedGroupId === group.id ? `1.5px solid ${C.coral}` : `1px solid ${C.line}`, background: selectedGroupId === group.id ? C.cream : "#fff", marginBottom: 8, cursor: "pointer" }}>
+              <div style={{ width: 30, height: 30, borderRadius: 8, background: group.color, display: "flex", alignItems: "center", justifyContent: "center" }}>{group.icon}</div>
+              <span style={{ fontWeight: 700, fontSize: 13 }}>{group.name}</span>
             </div>
           ))}
 
           <div style={{ fontSize: 12.5, fontWeight: 700, margin: "14px 0 8px" }}>메모</div>
-          <input value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="루프탑 있는 카페, 어니언 포카치아 빵 맛집" style={{ width: "100%", padding: "12px 14px", borderRadius: 12, border: `1px solid ${C.line}`, fontSize: 13, boxSizing: "border-box" }} />
+          <input value={memo} onChange={(event) => setMemo(event.target.value)} placeholder="더미 장소에 남길 메모" style={{ width: "100%", padding: "12px 14px", borderRadius: 12, border: `1px solid ${C.line}`, fontSize: 13, boxSizing: "border-box" }} />
         </div>
         <div style={{ padding: 18 }}>
-          <PrimaryButton disabled={!canSave} onClick={() => {
-            const newP = { id: "p" + (places.length + 1), groupId: selectedGroupId, name: tab === "link" ? "어니언 성수" : selectedResult.name, category: "카페", region: "성수", desc: "성수 · 새로 저장된 장소", image: IMG.cafe1, hours: "오늘 22:00까지", closed: "월요일 휴무", open: true, savedBy: ME.name, likes: 0, likedBy: [], status: "unconfirmed", location: "위치 정보 확인 필요", memos: memo ? [{ user: ME.name, emoji: ME.emoji, text: memo }] : [] };
-            setPlaces((prev) => [...prev, newP]);
-            toast_("장소를 저장했어요");
-            back();
-          }}>저장하기</PrimaryButton>
+          <PrimaryButton disabled={!selected} onClick={saveDummyPlace}>더미 장소 추가하기</PrimaryButton>
         </div>
       </>
     );
@@ -691,8 +741,7 @@ export default function WispotPrototype() {
     const [region, setRegion] = useState("성수");
     const [category, setCategory] = useState(null);
     const [showFilter, setShowFilter] = useState(false);
-    const [mapSelected, setMapSelected] = useState(groupPlaces[0]);
-
+    const [mapSelected, setMapSelected] = useState(null);
     const filtered = groupPlaces.filter((p) => (!region || p.region === region) && (!category || p.category === category));
 
     return (
@@ -763,25 +812,19 @@ export default function WispotPrototype() {
             })}
           </div>
         ) : (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-            <div style={{ flex: 1, background: "linear-gradient(135deg,#eef3ee,#f7efe9)", position: "relative", minHeight: 160 }}>
-              <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#B9AFA6", fontSize: 12, fontWeight: 700 }}>지도 영역 (프로토타입 – 실제 지도 미연동)</div>
-              {filtered.slice(0, 5).map((p, i) => (
-                <div key={p.id} onClick={() => setMapSelected(p)} style={{
-                  position: "absolute", top: `${20 + (i * 37) % 70}%`, left: `${15 + (i * 53) % 70}%`, cursor: "pointer",
-                  width: 30, height: 30, borderRadius: "50% 50% 50% 0", transform: "rotate(-45deg)", background: mapSelected?.id === p.id ? C.coral : "#fff",
-                  border: `2px solid ${C.coral}`, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
-                }}>
-                  <span style={{ transform: "rotate(45deg)", fontSize: 11 }}>{ICONS[p.category] || "📍"}</span>
-                </div>
-              ))}
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 320 }}>
+            <div style={{ flex: 1, position: "relative", minHeight: 250 }}>
+              <GoogleMap places={filtered} minHeight={250} onPlaceSelect={setMapSelected} />
             </div>
             {mapSelected && (
-              <div style={{ padding: 16, borderTop: `1px solid ${C.line}` }}>
+              <div style={{ padding: 16, borderTop: `1px solid ${C.line}`, background: C.bg, flexShrink: 0 }}>
                 <div style={{ display: "flex", gap: 10 }}>
                   <SafeImg src={mapSelected.image} alt={mapSelected.name} category={mapSelected.category} style={{ width: 64, height: 64, borderRadius: 12, objectFit: "cover" }} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 800, fontSize: 14.5 }}>{mapSelected.name}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <div style={{ fontWeight: 800, fontSize: 14.5, flex: 1 }}>{mapSelected.name}</div>
+                      <button onClick={() => setMapSelected(null)} aria-label="장소 정보 닫기" style={{ border: "none", background: "none", padding: 2, cursor: "pointer", color: C.muted }}><X size={15} /></button>
+                    </div>
                     <div style={{ fontSize: 11, color: C.muted, margin: "2px 0" }}>{mapSelected.desc}</div>
                     <div style={{ display: "flex", gap: 6, fontSize: 10.5, color: C.muted, alignItems: "center" }}>
                       <span>{mapSelected.savedBy} 저장</span><Heart size={11} color={C.coral} fill={C.coral} /><span>{mapSelected.likes}</span>
@@ -805,7 +848,7 @@ export default function WispotPrototype() {
   function PlaceDetailScreen() {
     const place = places.find((p) => p.id === current.params.placeId);
     const [memoInput, setMemoInput] = useState("");
-    const [expandPlan, setExpandPlan] = useState(true);
+    const [expandPlan, setExpandPlan] = useState(false);
     if (!place) return null;
     const liked = place.likedBy.includes(ME.id);
     const ongoing = groupPlans.filter((pl) => pl.status !== "done");
@@ -932,9 +975,9 @@ export default function WispotPrototype() {
 
   function VoteDetailScreen() {
     const vote = votes.find((v) => v.id === current.params.voteId);
+    const [chosen, setChosen] = useState(vote?.responses?.[ME.id] || null);
     if (!vote) return null;
     const myVote = vote.responses[ME.id];
-    const [chosen, setChosen] = useState(myVote || null);
     const totalVotes = Object.keys(vote.responses).length + (chosen && !myVote ? 1 : 0);
     const counts = {};
     vote.candidateIds.forEach((id) => (counts[id] = 0));
@@ -1697,6 +1740,7 @@ export default function WispotPrototype() {
     const [showAddItemSheet, setShowAddItemSheet] = useState(false);
     if (!plan) return null;
     const items = plan.items || [];
+    const routePlaces = items.map((item) => places.find((place) => place.id === item.placeId)).filter(Boolean);
 
     function replaceItem(idx, newPlaceId) {
       setPlans((ps) => ps.map((p) => p.id !== plan.id ? p : { ...p, items: p.items.map((it, i) => i === idx ? { ...it, placeId: newPlaceId, reason: "새 추천 · 동선 반영", itemLikes: [], wantChange: [] } : it) }));
@@ -1768,7 +1812,9 @@ export default function WispotPrototype() {
             <span style={{ background: C.cream, color: C.coralDark, padding: "4px 10px", borderRadius: 999 }}>📍 {plan.area}</span>
             <span style={{ background: C.cream, color: C.coralDark, padding: "4px 10px", borderRadius: 999 }}>🕐 {plan.start} → {plan.end}</span>
           </div>
-          <div style={{ marginTop: 10, height: 120, borderRadius: 14, background: "linear-gradient(135deg,#eef3ee,#f7efe9)", display: "flex", alignItems: "center", justifyContent: "center", color: "#B9AFA6", fontSize: 11.5, fontWeight: 700 }}>지도 · 동선 미리보기 (프로토타입)</div>
+          <div style={{ marginTop: 10, height: 150, borderRadius: 14, overflow: "hidden", border: `1px solid ${C.line}` }}>
+            <GoogleMap places={routePlaces} showRoute height={150} minHeight={150} />
+          </div>
           {plan.sample && (
             <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 12, background: C.cream, border: `1px solid ${C.line}`, display: "flex", alignItems: "center", gap: 8 }}>
               <Sparkles size={14} color={C.coral} style={{ flexShrink: 0 }} />
@@ -1864,7 +1910,22 @@ export default function WispotPrototype() {
   }
 
   /* ---------- 프로필 (간단 스텁) ---------- */
+  async function signOut() {
+    if (!supabase) {
+      reset("login");
+      return;
+    }
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      toast_("로그아웃하지 못했어요");
+      return;
+    }
+    setProfile(null);
+    reset("login");
+  }
+
   function ProfileScreen() {
+    const providerLabel = session?.user?.app_metadata?.provider === "kakao" ? "카카오" : "이메일";
     return (
       <>
         <Header title="프로필" />
@@ -1873,11 +1934,12 @@ export default function WispotPrototype() {
             <div style={{ width: 56, height: 56, borderRadius: "50%", background: C.cream, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26 }}>{ME.emoji}</div>
             <div>
               <div style={{ fontWeight: 800, fontSize: 16 }}>{ME.name}</div>
-              <div style={{ fontSize: 12, color: C.muted }}>카카오 계정 연동됨</div>
+              <div style={{ fontSize: 12, color: C.muted }}>{providerLabel} 계정 연동됨</div>
+              {session?.user?.email && <div style={{ fontSize: 10.5, color: "#A49A94", marginTop: 2 }}>{session.user.email}</div>}
             </div>
           </div>
           {["온보딩 취향 다시 설정하기", "알림 설정", "그룹 관리", "로그아웃"].map((t) => (
-            <div key={t} onClick={() => t === "로그아웃" ? reset("login") : t === "그룹 관리" ? go("groupManage") : toast_("프로토타입 범위 밖이에요")} style={{ padding: "14px 4px", borderBottom: `1px solid #F5EDE8`, fontSize: 13.5, fontWeight: 700, color: C.charcoal, cursor: "pointer" }}>{t}</div>
+            <div key={t} onClick={() => t === "로그아웃" ? signOut() : t === "그룹 관리" ? go("groupManage") : toast_("프로토타입 범위 밖이에요")} style={{ padding: "14px 4px", borderBottom: `1px solid #F5EDE8`, fontSize: 13.5, fontWeight: 700, color: C.charcoal, cursor: "pointer" }}>{t}</div>
           ))}
         </div>
       </>
@@ -1896,7 +1958,7 @@ export default function WispotPrototype() {
       case "groupInvite": return <GroupInviteScreen />;
       case "groupJoinPreview": return <GroupJoinPreviewScreen />;
       case "groupManage": return <GroupManageScreen />;
-      case "placeSave": return <PlaceSaveScreen />;
+      case "placeSave": return <DummyPlaceSaveScreen />;
       case "placeDetail": return <PlaceDetailScreen />;
       case "emptyStart": return <EmptyStartScreen />;
       case "voteCreate": return <VoteCreateScreen />;
@@ -1922,6 +1984,17 @@ export default function WispotPrototype() {
     if (id === "map") { setFeedMode("map"); go("feed", {}, current.screen === "feed"); }
     else if (id === "feed") { setFeedMode("feed"); go("feed", {}, current.screen === "feed"); }
     else go(id, {}, ["feed", "appointments", "profile"].includes(current.screen));
+  }
+
+  if (!authReady) {
+    return (
+      <PhoneFrame>
+        <StatusBar />
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontSize: 13, fontWeight: 700 }}>
+          로그인 상태를 확인하고 있어요...
+        </div>
+      </PhoneFrame>
+    );
   }
 
   return (
