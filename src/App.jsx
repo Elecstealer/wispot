@@ -292,6 +292,7 @@ export default function WispotPrototype() {
   const [toast, setToastMsg] = useState("");
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
+  const [demoMode, setDemoMode] = useState(() => window.localStorage.getItem("wispot_demo_mode") === "true");
   const [authReady, setAuthReady] = useState(!isSupabaseConfigured);
   const toastTimer = useRef(null);
 
@@ -316,11 +317,19 @@ export default function WispotPrototype() {
       if (!active) return;
       if (error) setToastMsg("로그인 상태를 확인하지 못했어요");
       setSession(data.session);
+      if (data.session) {
+        window.localStorage.removeItem("wispot_demo_mode");
+        setDemoMode(false);
+      }
       setAuthReady(true);
     });
 
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
+      if (nextSession) {
+        window.localStorage.removeItem("wispot_demo_mode");
+        setDemoMode(false);
+      }
       setAuthReady(true);
     });
 
@@ -355,12 +364,12 @@ export default function WispotPrototype() {
 
   useEffect(() => {
     if (!authReady) return;
-    if (session && current.screen === "login") {
+    if ((session || demoMode) && current.screen === "login") {
       setHistory([{ screen: "groupList", params: {} }]);
-    } else if (!session && current.screen !== "login") {
+    } else if (!session && !demoMode && current.screen !== "login") {
       setHistory([{ screen: "login", params: {} }]);
     }
-  }, [authReady, session, current.screen]);
+  }, [authReady, session, demoMode, current.screen]);
 
   function go(screen, params = {}, replace = false) {
     setHistory((h) => (replace ? [...h.slice(0, -1), { screen, params }] : [...h, { screen, params }]));
@@ -413,6 +422,12 @@ export default function WispotPrototype() {
       setLoading(false);
     }
 
+    function startDemoMode() {
+      window.localStorage.setItem("wispot_demo_mode", "true");
+      setDemoMode(true);
+      reset("groupList");
+    }
+
     return (
       <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", padding: 40, textAlign: "center" }}>
         <img src={`data:image/png;base64,${LOGO_B64}`} alt="wispot 로고" style={{ width: 84, height: 84, borderRadius: 22, marginBottom: 24, objectFit: "cover" }} />
@@ -425,6 +440,13 @@ export default function WispotPrototype() {
         <div style={{ fontSize: 10.5, color: "#A49A94", marginTop: 10 }}>비밀번호 없이 이메일로 받은 링크를 눌러 로그인해요.</div>
         {authMessage && <div role="status" style={{ fontSize: 11, color: authMessage.includes("보냈어요") ? "#2A9D82" : "#B24A3A", marginTop: 12, lineHeight: 1.5 }}>{authMessage}</div>}
         {!isSupabaseConfigured && <div style={{ fontSize: 10.5, color: "#B24A3A", marginTop: 12 }}>.env.local의 Supabase 설정이 필요합니다.</div>}
+        <div style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, margin: "22px 0 14px", color: "#C9BFB8", fontSize: 10.5 }}>
+          <span style={{ flex: 1, height: 1, background: C.line }} /><span>또는</span><span style={{ flex: 1, height: 1, background: C.line }} />
+        </div>
+        <button onClick={startDemoMode} style={{ width: "100%", padding: "13px", borderRadius: 13, border: `1px solid ${C.line}`, background: "#fff", color: C.charcoal, fontWeight: 800, fontSize: 13.5, cursor: "pointer" }}>
+          테스트 계정으로 둘러보기
+        </button>
+        <div style={{ fontSize: 10.5, color: "#A49A94", marginTop: 9 }}>이메일 발송 없이 더미 데이터로 바로 시작해요.</div>
       </div>
     );
   }
@@ -1911,7 +1933,15 @@ export default function WispotPrototype() {
 
   /* ---------- 프로필 (간단 스텁) ---------- */
   async function signOut() {
+    if (demoMode && !session) {
+      window.localStorage.removeItem("wispot_demo_mode");
+      setDemoMode(false);
+      reset("login");
+      return;
+    }
     if (!supabase) {
+      window.localStorage.removeItem("wispot_demo_mode");
+      setDemoMode(false);
       reset("login");
       return;
     }
@@ -1925,7 +1955,7 @@ export default function WispotPrototype() {
   }
 
   function ProfileScreen() {
-    const providerLabel = session?.user?.app_metadata?.provider === "kakao" ? "카카오" : "이메일";
+    const providerLabel = demoMode ? "테스트" : session?.user?.app_metadata?.provider === "kakao" ? "카카오" : "이메일";
     return (
       <>
         <Header title="프로필" />
